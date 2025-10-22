@@ -1,73 +1,80 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { BrowserMultiFormatReader, BarcodeFormat, type IScannerControls } from '@zxing/browser';
+import { useState, useCallback } from 'react';
+import { BrowserMultiFormatReader } from '@zxing/browser';
+import { BarcodeFormat, DecodeHintType } from '@zxing/library';
 
-export default function ScanPage() {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [status, setStatus] = useState<'idle'|'ok'|'no-https'|'no-camera'|'error'>('idle');
+export default function UploadIsbnScanner() {
+  const [preview, setPreview] = useState<string | null>(null);
   const [isbn, setIsbn] = useState('');
+  const [error, setError] = useState('');
 
-  useEffect(() => {
-    let controls: IScannerControls | undefined;
+  const onFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.currentTarget;                  // <- capture BEFORE await
+    const file = input.files?.[0];
+    if (!file) return;
 
-    (async () => {
-      try {
-        // HTTPS / localhost check (required for iOS camera)
-        const isSecure = window.isSecureContext || location.protocol === 'https:' || location.hostname === 'localhost';
-        if (!isSecure) {
-          setStatus('no-https');
-          return;
-        }
-        if (!navigator.mediaDevices?.getUserMedia) {
-          setStatus('no-camera');
-          return;
-        }
+    setError('');
+    setIsbn('');
 
-        const reader = new BrowserMultiFormatReader();
-        controls = await reader.decodeFromConstraints(
-          {
-            video: {
-              facingMode: { ideal: 'environment' },
-              width: { ideal: 640 },
-              height: { ideal: 480 },
-            },
-            formats: [BarcodeFormat.EAN_13], // ISBN-13
-          } as any,
-          videoRef.current!,
-          (result) => {
-            if (result) setIsbn(result.getText());
-          }
-        );
-        setStatus('ok');
-      } catch (e) {
-        console.error(e);
-        setStatus('error');
-      }
-    })();
+    const url = URL.createObjectURL(file);
+    setPreview(url);
 
-    // Optional: stop camera when tab goes background (helps iOS)
-    const onVisibility = () => { if (document.hidden) controls?.stop(); };
-    document.addEventListener('visibilitychange', onVisibility);
+    try {
+      const hints = new Map();
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.EAN_13]);
+      // Optional: improve robustness on tough images
+      // hints.set(DecodeHintType.TRY_HARDER, true);
 
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibility);
-      controls?.stop(); // ✅ correct cleanup
-    };
+      const reader = new BrowserMultiFormatReader(hints);
+      const result = await reader.decodeFromImageUrl(url);
+      setIsbn(result.getText());
+    } catch (err) {
+      console.error(err);
+      setError('Could not detect a valid ISBN barcode in the image.');
+    } finally {
+      // Reset the file input so the same file can be re-selected if needed
+      try { input.value = ''; } catch {}
+      // DO NOT revoke `url` here—wait for <img onLoad> to fire (see below)
+    }
   }, []);
 
   return (
     <div style={{ padding: 16 }}>
-      <h2>Scan ISBN (EAN-13)</h2>
-      <video ref={videoRef} style={{ width: '100%', maxWidth: 480 }} muted playsInline autoPlay />
-      <p style={{ marginTop: 12 }}>
-        {isbn ? <>Scanned: <b>{isbn}</b></> :
-         status === 'ok' ? 'Point camera at the barcode' :
-         status === 'no-https' ? 'Needs HTTPS (or localhost).' :
-         status === 'no-camera' ? 'Camera not available.' :
-         status === 'error' ? 'Could not start camera.' :
-         'Initializing...'}
-      </p>
+      <h2>Upload / Take a Photo of the Book Barcode</h2>
+
+      <input
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={onFileChange}
+      />
+
+      {preview && (
+        <div style={{ marginTop: 12 }}>
+          <img
+            src={preview}
+            alt="preview"
+            style={{ maxWidth: '100%', display: 'block' }}
+            onLoad={() => {
+              // Safe place to revoke: after the <img> has consumed the blob
+              try { URL.revokeObjectURL(preview); } catch {}
+            }}
+          />
+        </div>
+      )}
+
+      {isbn && (
+        <p style={{ marginTop: 12 }}>
+          <b>ISBN-13:</b> {isbn}
+        </p>
+      )}
+
+      {error && (
+        <p style={{ marginTop: 12, color: 'crimson' }}>
+          {error}
+        </p>
+      )}
     </div>
   );
 }
